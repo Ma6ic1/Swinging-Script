@@ -1,0 +1,767 @@
+local player = game.Players.LocalPlayer
+local mouse = player:GetMouse()
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+local userInputService = game:GetService("UserInputService")
+local runService = game:GetService("RunService")
+local information = player:WaitForChild("Information")
+local Powers = information:WaitForChild("Powers")
+
+
+local rightHand = character:WaitForChild("RightHand")
+local Particles = game.ReplicatedStorage:WaitForChild("Particles")
+local AirBoostParticle = Particles:WaitForChild("AirBoostParticle"):Clone()
+local camera = game.Workspace.CurrentCamera
+local TweenService = game:GetService("TweenService")
+
+local Dashsfx = game.ReplicatedStorage.Sounds:WaitForChild("Dash Sound Effect"):Clone()
+Dashsfx.Volume = 0.3
+Dashsfx.Parent = player.Character.HumanoidRootPart
+local Declinesfx = game.ReplicatedStorage.Sounds:WaitForChild("Blip Tone Single High Pitch Synth Blip Stacc (SFX)")
+local canMove = nil
+local connected = false
+local currentRopePart = nil -- To store the part that holds the rope
+local isSwinging = false -- To track if the player is currently swinging
+local swingForce = nil -- VectorForce for controlling swing force
+local gravityForce = nil -- VectorForce to simulate gravity
+local alignOrientation = nil -- AlignOrientation to keep the character facing forward
+
+local isPressingW = false
+local isPressingA = false
+local isPressingD = false
+
+local airBoostCooldown = 3 -- Cooldown for air boost in seconds
+local canAirBoost = true -- Variable to track if air boost is available
+local jumpboostvalue = player:WaitForChild("Information"):WaitForChild("Powers"):WaitForChild("AirBoost")
+local airBoostForce = jumpboostvalue.Value -- Force for air boost
+local isAirborne = false -- Track whether the player is airborne
+
+
+local swinganimation = Instance.new("Animation")
+swinganimation.AnimationId = "http://roblox.com/asset/?id=95008242220742a" -- Replace with your animation's asset ID
+local realeseanimation = Instance.new("Animation")
+realeseanimation.AnimationId = "http://roblox.com/asset/?id=112224446069142"
+local frontanimation = Instance.new("Animation")
+frontanimation.AnimationId = "http://roblox.com/asset/?id=120204839641151"
+-- Set a slow-motion factor
+local slowMotionFactor = 0.02 -- A value below 1.0 will simulate slow motion (e.g., 0.2 = 20% of normal speed)
+local freefallGravity = Vector3.new(0, -workspace.Gravity * 0.5, 0) -- Reduced gravity for freefall
+
+AirBoostParticle = Particles:WaitForChild("AirBoostParticle"):Clone()
+AirBoostParticle.Parent = humanoidRootPart -- Make sure it's parented to the correct part
+AirBoostParticle.Enabled = false -- Start with the particle disabled
+
+-- Track IntValues from the player's Information folder
+local rangeValue = information:WaitForChild("Range") -- The IntValue for range
+local speedValue = information:WaitForChild("MaxSpeed") -- The IntValue for max speed
+
+-- Initialize maxRange and maxSpeed from the IntValue objects
+local maxRange = rangeValue.Value
+local maxSpeed = speedValue.Value
+
+-- Function to update maxRange when the IntValue changes
+rangeValue.Changed:Connect(function(newValue)
+	maxRange = rangeValue.Value -- Update the local variable to match the IntValue
+	print("Range has changed to:", maxRange) -- Debugging output
+end)
+
+-- Function to update maxSpeed when the IntValue changes
+speedValue.Changed:Connect(function(newValue)
+	maxSpeed = speedValue.Value -- Update the local variable to match the IntValue
+	print("MaxSpeed has changed to:", maxSpeed) -- Debugging output
+end)
+
+------------------------------------------
+local player = game.Players.LocalPlayer
+local PlayerGui = player:WaitForChild("PlayerGui")
+local MainGui = PlayerGui:WaitForChild("MainGui")
+local Airboost = MainGui:WaitForChild("Airboost") -- Make sure this is a UI element (e.g., Frame, ImageLabel)
+
+-- Function to apply the ability (e.g., when Airboost is used)
+local function AbilityApplied()
+	Airboost.BackgroundTransparency = 1 -- Fully transparent when ability is used
+end
+
+-- Function to revert the ability (e.g., when Airboost cooldown ends)
+local function AbilityRevert()
+	Airboost.BackgroundTransparency = 0.5 -- Partially transparent when ability is available again
+end
+------------------CAMERA--------------------------
+local function increaseFOV(duration, returnSpeed)
+	local originalFOV = camera.FieldOfView -- Store the original FOV
+	local targetFOV = originalFOV + 20 -- Increase the current FOV by 20
+
+	-- TweenInfo for smooth transition to target FOV
+	local tweenInfoToTarget = TweenInfo.new(returnSpeed, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local tweenGoalToTarget = { FieldOfView = targetFOV }
+	local tweenToTarget = TweenService:Create(camera, tweenInfoToTarget, tweenGoalToTarget)
+
+	-- TweenInfo for smooth return to original FOV
+	local tweenInfoToOriginal = TweenInfo.new(returnSpeed, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local tweenGoalToOriginal = { FieldOfView = originalFOV }
+	local tweenToOriginal = TweenService:Create(camera, tweenInfoToOriginal, tweenGoalToOriginal)
+
+	-- Play the tween to smoothly transition to the target FOV
+	tweenToTarget:Play()
+
+	-- After the specified duration, smoothly transition back to the original FOV
+	task.delay(duration, function()
+		tweenToOriginal:Play() -- Start the smooth transition back to the original FOV
+	end)
+end
+
+---------------------------------------
+--ANIMATION------------------------------------------------------
+local slowMotionFactor = 0.2 -- Adjust this value for more "floaty" physics (smaller values make it slower and floatier)
+local gravityScale = 0.3 -- A value less than 1.0 to simulate lower gravity (e.g., 0.3 = 30% of normal gravity)
+local swingTrack = humanoid:LoadAnimation(swinganimation)
+local releaseTrack = humanoid:LoadAnimation(realeseanimation)
+local flipTrack = humanoid:LoadAnimation(frontanimation)
+-- Function to handle animations efficiently
+
+local function playAnimation(animationTrack, speed, looped, freezeTime)
+	animationTrack:Stop() -- Ensure the animation is reset before playing
+	animationTrack.TimePosition = 0 -- Start the animation from the beginning
+	animationTrack:AdjustSpeed(speed) -- Set the animation speed
+	animationTrack.Looped = looped -- Set whether the animation should loop
+	animationTrack:Play() -- Play the animation
+
+	-- Freeze the animation after a given time if freezeTime is provided
+	if freezeTime then
+		task.delay(freezeTime, function()
+			animationTrack:AdjustSpeed(0) -- Freeze the animation after the specified time
+		end)
+	end
+end
+
+local function startSwing()
+	playAnimation(swingTrack, 1, true, 0.13) -- Corrected to reset animation before playing
+end
+
+local function startRelease()
+	playAnimation(releaseTrack, 1, false, nil) -- Ensure release animation starts from the beginning
+end
+
+local function startFlip()
+	playAnimation(flipTrack, 1, false, nil) -- Ensure flip animation starts from the beginning
+end
+
+local function finishSwing()
+	swingTrack:Stop() -- Stop the animation when swinging ends
+	swingTrack.Looped = false -- Ensure it does not loop again
+end
+
+----------------------------------------------------------
+
+local function startFreefall()
+	print("freefalling")
+	humanoid.PlatformStand = true
+	-- Simulate reduced gravity during freefall
+	gravityForce = Instance.new("VectorForce")
+	gravityForce.Attachment0 = humanoidRootPart:FindFirstChild("RootRigAttachment")
+	gravityForce.Force = freefallGravity
+	gravityForce.RelativeTo = Enum.ActuatorRelativeTo.World
+	gravityForce.Parent = humanoidRootPart
+	isAirborne = true
+	isSwinging = false
+end
+
+local function stopFreefall()
+	if gravityForce then
+		gravityForce:Destroy()
+		gravityForce = nil
+	end
+	humanoid.PlatformStand = false
+	isAirborne = false
+end
+
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--ROPE LOGIC
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Function to release the current rope
+local function releaseRope()
+	-- Stop the swing animation and play the release animation
+	finishSwing() -- Stop the swing animation properly
+	startRelease() -- Play the release animation
+
+	if currentRopePart then
+		currentRopePart:Destroy() -- Remove the current rope part and its constraint
+		currentRopePart = nil
+		isSwinging = false -- Stop swinging state
+		humanoid.PlatformStand = true -- Enable free fall
+
+		-- Destroy forces and alignment when stopping the swing
+		if swingForce then
+			swingForce:Destroy()
+			swingForce = nil
+		end
+		if gravityForce then
+			gravityForce:Destroy()
+			gravityForce = nil
+		end
+		if alignOrientation then
+			alignOrientation:Destroy()
+			alignOrientation = nil
+		end
+		connected = false
+	end
+end
+
+
+-- Function to create a rope at the clicked position
+local function createRope(startPos)
+	-- Release any existing rope first
+	releaseRope()
+	-- Start the swing animation
+	startSwing()
+
+	-- Calculate the distance between the player and the clicked position
+	local distance = (humanoidRootPart.Position - startPos).Magnitude
+
+	-- Check if the distance exceeds the max range
+	if distance > maxRange then
+		print("Out of range", distance) -- If out of range, don’t create the rope
+		releaseRope()
+		return
+	end
+
+	connected = true
+
+	-- 1. Create an invisible part at the click position
+	local attachmentPart = Instance.new("Part")
+	attachmentPart.Size = Vector3.new(1, 1, 1)
+	attachmentPart.Anchored = true
+	attachmentPart.CanCollide = false
+	attachmentPart.Transparency = 1
+	attachmentPart.Position = startPos
+	attachmentPart.Parent = workspace
+
+	-- 2. Create Attachments for physics (on the HumanoidRootPart)
+	local attachment1 = Instance.new("Attachment")
+	attachment1.Parent = attachmentPart
+
+	local attachment2 = Instance.new("Attachment")
+	attachment2.Parent = humanoidRootPart -- Ensure attachment is on the HumanoidRootPart (center of the character)
+
+	-- 3. Create the RopeConstraint for physics
+	local ropeConstraint = Instance.new("RopeConstraint")
+	ropeConstraint.Attachment0 = attachment1
+	ropeConstraint.Attachment1 = attachment2
+	ropeConstraint.Length = distance -- Set the rope length to the distance
+	ropeConstraint.Visible = false -- This is the actual physics rope, so it will be invisible
+	ropeConstraint.Thickness = 0.1
+	ropeConstraint.Parent = attachmentPart
+
+	-- Store the current rope part and enable swinging
+	currentRopePart = attachmentPart
+	humanoid.PlatformStand = true -- Disable default movement
+	isSwinging = true -- Set swinging state to true
+
+	-- Create a VectorForce to simulate swinging motion
+	swingForce = Instance.new("VectorForce")
+	swingForce.Attachment0 = attachment2
+	swingForce.Force = Vector3.new(0, 0, 0) -- We’ll update this in the Heartbeat loop
+	swingForce.RelativeTo = Enum.ActuatorRelativeTo.World -- Apply force relative to the world
+	swingForce.ApplyAtCenterOfMass = true -- Apply at the center of mass
+	swingForce.Parent = humanoidRootPart
+
+	-- Simulate reduced gravity
+	gravityForce = Instance.new("VectorForce")
+	gravityForce.Attachment0 = attachment2
+	gravityForce.Force = Vector3.new(0, -(humanoidRootPart.AssemblyMass * workspace.Gravity * gravityScale), 0) -- Apply scaled gravity
+	gravityForce.RelativeTo = Enum.ActuatorRelativeTo.World
+	gravityForce.ApplyAtCenterOfMass = true
+	gravityForce.Parent = humanoidRootPart
+
+	-- Create AlignOrientation to control the character’s facing direction
+	alignOrientation = Instance.new("AlignOrientation")
+	alignOrientation.Attachment0 = attachment2
+	alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	alignOrientation.MaxTorque = 10000 -- Control rotation responsiveness
+	alignOrientation.Responsiveness = 200 -- Higher value for snappier alignment
+	alignOrientation.CFrame = humanoidRootPart.CFrame -- Start with the player’s current orientation
+	alignOrientation.Parent = humanoidRootPart
+
+	-- Create the visual rope that attaches to the RightHand
+	local rightHand = character:FindFirstChild("RightHand")
+	if rightHand then
+		local rightHandAttachment = Instance.new("Attachment")
+		rightHandAttachment.Parent = rightHand -- Attach to the RightHand
+
+		-- Create a visual RopeConstraint for the right hand (visual only)
+		local visualRope = Instance.new("RopeConstraint")
+		visualRope.Name = "VisualRopeConstraint" -- Give it a specific name for easy reference
+		visualRope.Attachment0 = attachment1
+		visualRope.Attachment1 = rightHandAttachment
+		visualRope.Length = distance -- Set the rope length
+		visualRope.Visible = true -- This rope is visible
+		visualRope.Thickness = 0.1
+		visualRope.Parent = attachmentPart
+	end
+end
+
+-- Function to launch the player from a JumpPad
+local function launchPlayerFromJumpPad(jumpPad, player, force)
+	
+	
+
+
+	local character = player.Character
+	if not character then return end
+
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoidRootPart then return end
+
+	-- Get the JumpPad's forward direction (assuming it's pointing in its LookVector)
+	local jumpPadLookVector = jumpPad.CFrame.LookVector
+
+	-- Calculate a vector that launches more upward
+	-- The Vector3.new(0, 2, 0) makes the launch more vertical by increasing the upward component
+	local launchDirection = (jumpPadLookVector + Vector3.new(0, 1.5, 0)).Unit -- More emphasis on upward direction
+	print("Launch direction:", launchDirection) -- Debugging: Check the direction
+
+	-- Set the launch force magnitude
+	local launchForceMagnitude = force
+
+	-- Apply force to the player for the initial launch
+	humanoidRootPart.Velocity = launchDirection * launchForceMagnitude -- Apply the launch direction to the player's velocity
+
+	print("Player launched upwards!")
+end
+
+local maxVelocity = maxSpeed
+local minRopeLength = 5 -- Minimum length the rope can shrink to
+
+-- Function to cap the player's velocity
+local function capVelocity()
+	if humanoidRootPart.Velocity.Magnitude > maxVelocity then
+		-- Calculate the direction the player is moving in
+		local direction = humanoidRootPart.Velocity.Unit
+
+		-- Cap the velocity to the maximum allowed speed
+		humanoidRootPart.Velocity = direction * maxVelocity
+	end
+end
+
+-- Function to adjust the rope length based on player proximity to the attachment point
+local function adjustRopeLength()
+	if currentRopePart then
+		-- Find both the physics rope and the visual rope
+		local ropeConstraint = currentRopePart:FindFirstChildOfClass("RopeConstraint") -- Physics rope
+		local visualRopeConstraint = currentRopePart:FindFirstChild("VisualRopeConstraint") -- Visual rope (name must match "VisualRopeConstraint")
+
+		-- Calculate the current distance between the HumanoidRootPart and the attachment point
+		local currentDistance = (humanoidRootPart.Position - currentRopePart.Position).Magnitude
+
+		-- Adjust the physics rope's length only when the player is closer to the attachment point
+		if ropeConstraint and currentDistance < ropeConstraint.Length then
+			ropeConstraint.Length = math.max(currentDistance, minRopeLength) -- Ensure the length doesn't go below minRopeLength
+		end
+
+		-- Ensure that the visual rope constraint follows the physics rope's length
+		if visualRopeConstraint then
+			-- Match the visual rope's length with the physics rope length to maintain consistency
+			visualRopeConstraint.Length = ropeConstraint.Length+2 -- Ensure the visual matches physics rope
+		end
+	end
+end
+
+
+
+local function handleFreefallMovement()
+	if isAirborne then
+		local movementInput = Vector3.new(0, 0, 0)
+		if isPressingW then
+			movementInput += humanoidRootPart.CFrame.LookVector
+		end
+		if isPressingA then
+			movementInput += -humanoidRootPart.CFrame.RightVector
+		end
+		if isPressingD then
+			movementInput += humanoidRootPart.CFrame.RightVector
+		end
+
+		humanoidRootPart.Velocity += movementInput * 10 -- Adjust movement speed
+	end
+end
+
+userInputService.InputBegan:Connect(function(input)
+	-- Existing input detection logic...
+	handleFreefallMovement() -- Update input handling for freefall
+end)
+
+
+-- Function to check if the player is airborne (not touching any parts)
+local function checkAirborne()
+	-- Raycast down to see if the player is touching the ground
+	local rayOrigin = humanoidRootPart.Position
+	local rayDirection = Vector3.new(0, -4, 0) -- Raycast slightly below the player
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterDescendantsInstances = {character}
+	raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+	local raycastResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+
+	return raycastResult == nil -- If no ground detected, player is airborne
+end
+
+-- Function to apply forces for swinging
+local function applySwingingForce(direction, speed)
+	if isSwinging and swingForce then
+		-- Apply reduced swinging force to simulate slower motion
+		swingForce.Force = direction * speed * 50 * slowMotionFactor -- Scale down the force by slowMotionFactor
+
+		-- Additional force when pressing W for gaining momentum
+		if isPressingW then
+			swingForce.Force += humanoidRootPart.CFrame.LookVector * 300
+		end
+
+		-- Left and right control
+		if isPressingA then
+			swingForce.Force += humanoidRootPart.CFrame.RightVector * -1500
+		elseif isPressingD then
+			swingForce.Force += humanoidRootPart.CFrame.RightVector * 1500 
+		end
+	end
+end
+
+-- Function to align the player in the direction of swinging
+local function alignPlayerToSwing()
+	if isSwinging and alignOrientation then
+		-- Use the player's velocity to determine the direction
+		local velocityDirection = humanoidRootPart.Velocity.Unit
+
+		-- Ensure the character doesn't face the wrong direction if speed is too low
+		if humanoidRootPart.Velocity.Magnitude > 0.1 then
+			-- Align the player to face the velocity direction, while keeping them upright
+			alignOrientation.CFrame = CFrame.lookAt(humanoidRootPart.Position, humanoidRootPart.Position + velocityDirection, Vector3.new(0, 1, 0))
+		end
+	end
+end
+local boostdebug = nil
+-- Function to handle air boost when swinging or airborne
+
+-- Function to handle air boost when swinging or airborne
+local function airBoost()
+	
+	if canAirBoost and (isSwinging or isAirborne) then
+		Dashsfx:Play()
+		startFlip()
+		increaseFOV(0.2, 1)
+		-- Enable the particle effect
+		AirBoostParticle.Enabled = true
+		-- Emit a burst of particles
+		AirBoostParticle:Emit(10) -- Emit a burst of 10 particles
+		print("Air boost activated!")
+
+		-- Calculate the boost direction (default to forward)
+		local boostDirection = humanoidRootPart.CFrame.LookVector
+		local boostdebug = 4 -- Default boost debug value
+
+		-- Modify boost direction based on key inputs
+		if isPressingW then
+			boostDirection = humanoidRootPart.CFrame.LookVector -- Forward boost
+		end
+		if isPressingA then
+			boostDirection = boostDirection - humanoidRootPart.CFrame.RightVector -- Leftward boost
+		end
+		if isPressingD then
+			boostDirection = boostDirection + humanoidRootPart.CFrame.RightVector -- Rightward boost
+		end
+
+		-- Adjust boost strength based on whether the player is swinging or falling
+		if connected then
+			print("Boosted while swinging")
+			boostdebug = 4 -- Moderate boost while swinging
+		elseif not connected and not isSwinging then
+			boostdebug = 2 -- Normal boost while falling
+		elseif not connected and isSwinging then
+			boostdebug = 10 -- Reduced boost if just started swinging
+			print("Boost while falling")
+		end
+
+		-- Normalize the boost direction and apply the air boost force
+		boostDirection = boostDirection.Unit
+		humanoidRootPart.Velocity = humanoidRootPart.Velocity + boostDirection * (airBoostForce / boostdebug)
+		AbilityApplied()
+		-- Disable air boost until the cooldown is over
+		canAirBoost = false
+		print("Air boost on cooldown.")
+		
+		-- Delay disabling the particle so it stays visible for a moment
+		task.delay(0.5, function() -- Slightly increase the delay to 0.5 seconds
+			AirBoostParticle.Enabled = false -- This stops any continuous emission
+		end)
+
+		-- Set a delay for the air boost cooldown
+		task.delay(airBoostCooldown, function()
+			canAirBoost = true
+			print("Air boost ready again.")
+			AbilityRevert()
+		end)
+	end
+end
+
+
+-- Function to fire rays around the mouse and pick the closest hit
+local function fireRaysAroundMouse()
+	local directions = { -- Directions around the mouse to cast rays
+		Vector3.new(0, 0, 0), -- Center (mouse.Hit position)
+		Vector3.new(1, 0, 0), -- Slightly to the right
+		Vector3.new(-1, 0, 0), -- Slightly to the left
+		Vector3.new(0, 1, 0), -- Slightly up
+		Vector3.new(0, -1, 0), -- Slightly down
+		Vector3.new(1, 1, 0), -- Top-right diagonal
+		Vector3.new(-1, 1, 0), -- Top-left diagonal
+		Vector3.new(0.1, -0.1, 0), -- Bottom-right diagonal
+		Vector3.new(-0.1, -0.1, 0), -- Bottom-left diagonal
+	}
+
+	local mousePosition = mouse.Hit.Position -- The position of the original mouse click
+	local closestHit = nil
+	local closestDistance = math.huge -- A large number to represent the initial "infinite" distance
+
+	for _, direction in ipairs(directions) do
+		-- Fire a ray from the camera towards the direction around the mouse
+		local rayDirection = (mouse.Hit.Position + direction) - camera.CFrame.Position
+		local ray = Ray.new(camera.CFrame.Position, rayDirection.Unit * 500) -- Adjust ray length as needed
+		local raycastParams = RaycastParams.new()
+		raycastParams.FilterDescendantsInstances = {player.Character} -- Ignore the player's character
+		raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+
+		local result = workspace:Raycast(ray.Origin, ray.Direction, raycastParams)
+
+		if result then
+			-- Calculate the distance from the original mouse click position to this hit
+			local hitDistance = (result.Position - mousePosition).Magnitude
+
+			-- Keep track of the closest hit to the original mouse click
+			if hitDistance < closestDistance then
+				closestDistance = hitDistance
+				closestHit = result.Position
+			end
+		end
+	end
+
+	return closestHit -- Return the closest valid hit position, or nil if none was found
+end
+
+-- Mouse click handler
+mouse.Button1Down:Connect(function()
+	local hit = mouse.Hit
+	local clickPosition = hit.Position
+
+	-- Check if the player clicked on a part
+	-- hit is a CFrame, so we print the result for debugging
+	print("Mouse clicked at position: ", clickPosition)
+
+	-- No direct hit, fire rays around the mouse and pick the closest valid hit
+	local closestHit = fireRaysAroundMouse()
+
+	if closestHit then
+		print("Closest valid hit at: ", closestHit)
+		-- You can call createRope(closestHit) here once confirmed working
+		createRope(closestHit)
+	else
+		print("No valid hit found.")
+	end
+end)
+
+-- Mouse release handler to stop swinging
+mouse.Button1Up:Connect(function()
+	if isSwinging then
+		print("Released rope")
+		releaseRope() -- Release the rope and stop swinging when the mouse button is released
+	end
+end)
+
+
+-- Handle key inputs for W, A, D, and Space for air boost, and rope release
+userInputService.InputBegan:Connect(function(input)
+	-- Handle key inputs for W, A, D for movement and Space for air boost
+	if input.KeyCode == Enum.KeyCode.W then
+		isPressingW = true
+	elseif input.KeyCode == Enum.KeyCode.A then
+		isPressingA = true
+	elseif input.KeyCode == Enum.KeyCode.D then
+		isPressingD = true
+	elseif input.KeyCode == Enum.KeyCode.Space then
+		airBoost() -- Apply air boost when space is pressed
+	end
+end)
+
+-- Detect when input ends for directional keys
+userInputService.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.W then
+		isPressingW = false
+	elseif input.KeyCode == Enum.KeyCode.A then
+		isPressingA = false
+	elseif input.KeyCode == Enum.KeyCode.D then
+		isPressingD = false
+	end
+end)
+
+userInputService.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.W then
+		isPressingW = false
+	elseif input.KeyCode == Enum.KeyCode.A then
+		isPressingA = false
+	elseif input.KeyCode == Enum.KeyCode.D then
+		isPressingD = false
+	end
+end)
+local force = nil
+-- Function to handle when the player touches a part (e.g., a JumpPad)
+local force = nil
+-- Function to handle when the player touches a part (e.g., a JumpPad)
+local function onPlayerTouched(part, player)
+	
+	if part.Name == "JumpPad" then
+		-- Retrieve the JumpForce attribute from the part
+		local forceValue = part:GetAttribute("JumpForce")
+		if forceValue then -- Make sure the attribute exists
+			force = forceValue
+			launchPlayerFromJumpPad(part, player, force) -- Pass the force to the launch function
+		else
+			print("JumpForce attribute not found on the part")
+		end
+	end
+end
+
+
+-- Function to detect when the player touches the ground or other parts
+local function onTouched(Part)
+	local character = player.Character or player.CharacterAdded:Wait()
+
+	-- Ignore if the touched part is part of the player's own character
+	if Part:IsDescendantOf(character) then
+		return -- Ignore the character's own parts
+	end
+
+	-- If the rope is disconnected and the player touches something, stop physics
+	if not connected then
+		print("Reapplying")
+		onPlayerTouched(Part, player)
+		isSwinging = false
+		humanoid.PlatformStand = false -- Re-enable normal humanoid movement
+		
+	end
+	canMove = false
+end
+
+
+-- Connect the player's HumanoidRootPart Touched event, but ignore the character
+local function connectPlayerTouchEvents(player)
+	local character = player.Character or player.CharacterAdded:Wait()
+	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+	humanoidRootPart.Touched:Connect(function(part)
+		onTouched(part)
+	end)
+end
+
+
+runService.Heartbeat:Connect(function()
+	alignPlayerToSwing()
+	if isSwinging then
+		-- Existing swinging logic...
+		local directionToAnchor = (currentRopePart.Position - humanoidRootPart.Position).Unit or Vector3.new(0, 0, 0)
+		local speed = humanoidRootPart.Velocity.Magnitude
+		applySwingingForce(directionToAnchor, speed)
+
+		adjustRopeLength()
+		capVelocity()
+	elseif isAirborne then
+		-- Detect when player lands and stop freefall
+		if not checkAirborne() then
+			stopFreefall() -- Stop freefall when landing
+		end
+	else
+		-- Detect when player is in freefall (no ground or rope)
+		if checkAirborne() then
+			startFreefall() -- Start freefall when not touching any surface
+		end
+	end
+end)
+
+
+-- Connect the PlayerAdded event to handle when a new player joins
+game.Players.PlayerAdded:Connect(function(player)
+	connectPlayerTouchEvents(player)
+end)
+
+-- Ensure the LocalPlayer is also connected immediately
+if player.Character then
+	connectPlayerTouchEvents(player)
+else
+	player.CharacterAdded:Connect(function()
+		connectPlayerTouchEvents(player)
+	end)
+end
+
+local function setupCharacter(character)
+	local humanoid = character:WaitForChild("Humanoid")
+	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+	local rightHand = character:WaitForChild("RightHand")
+
+	-- Attach the particle effects to the character
+	AirBoostParticle.Parent = humanoidRootPart
+	AirBoostParticle.Enabled = false -- Start with the particle disabled
+
+	-- Track if the player is pressing movement keys
+	isPressingW, isPressingA, isPressingD = false, false, false
+	isSwinging, connected = false, false
+
+	-- Mouse hold handler to create the rope at the clicked position
+	mouse.Button1Down:Connect(function()
+		local hit = mouse.Hit
+		if hit then
+			local clickPosition = hit.Position
+			createRope(clickPosition) -- Create the rope at the mouse click position
+		end
+	end)
+
+	-- Mouse release handler to stop swinging
+	mouse.Button1Up:Connect(function()
+		if isSwinging then
+			releaseRope() -- Release the rope and stop swinging when the mouse button is released
+		end
+	end)
+
+	-- Key inputs for air boost
+	userInputService.InputBegan:Connect(function(input)
+		if input.KeyCode == Enum.KeyCode.Space then
+			airBoost() -- Apply air boost when space is pressed
+		end
+	end)
+end
+
+local function updateBoostValues()
+	-- Dynamically retrieve and update the latest values
+
+	airBoostForce = player.Information.Powers:WaitForChild("AirBoost").Value
+
+
+	-- Print values for debugging (optional)
+	print("Updated jumpBoostForce: ", airBoostForce)
+
+
+end
+-- Function to monitor changes in player's values and apply them in real-time
+local function connectValueChangeListeners()
+	-- Get the relevant objects from the player's Powers folder
+	local airBoostForce = player.Information.Powers:WaitForChild("AirBoost")
+
+	-- Connect property changed signals to update values dynamically
+	airBoostForce:GetPropertyChangedSignal("Value"):Connect(updateBoostValues)
+
+
+end
+
+-- Initial call to set values when the script starts
+updateBoostValues()
+
+-- Set up listeners for value changes
+connectValueChangeListeners()
